@@ -1,5 +1,7 @@
 ﻿"""EPD Core v3.1"""
 
+# v3.1이 공식 기본값. "3day_rms"는 v3.2 후보 (실험적).
+
 from .epd import (
     compute_epd,
     DEFAULT_W_PE,

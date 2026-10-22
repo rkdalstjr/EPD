@@ -1,0 +1,39 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ---- Build artifacts ----
+build/
+dist/
+*.whl
+*.tar.gz
+
+# ---- Data (대용량, 절대 커밋 X) ----
+data/
+*.parquet
+*.h5
+*.feather
+
+# CSV는 docs 안에서만 허용
+*.csv
+!docs/**/*.csv
+
+# ---- IDE ----
+.vscode/
+.idea/
+*.swp
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- Local only ----
+.backup_*/
+*.log

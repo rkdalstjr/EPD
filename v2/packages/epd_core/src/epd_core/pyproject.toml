@@ -1,6 +1,6 @@
 [project]
 name = "epd-core"
-version = "1.0.0"
+version = "3.1.0"
 description = "Entropy-Price Divergence — structural tension indicator (RSI-style bounded)"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -1,7 +1,8 @@
-﻿"""EPD v3.1 — 최종 확정.
+﻿"""EPD v3.2 — Magnitude divergence indicator.
 
 정의:
-    Z_r(t) = causal_zscore(r, w_z)
+    Z_r(t) = causal_zscore(r, w_z)                       [z_r_mode="daily"]
+          = causal_zscore(RMS(r, 3), w_z)                [z_r_mode="3day_rms"]
     PE_t   = permutation_entropy(r[t-w_pe:t], m, tau)
     Z_e(t) = causal_zscore(PE − E[PE | |Z_r|], w_z)
     EPD_mag = ||Z_r| − |Z_e||
@@ -9,18 +10,18 @@
 
 파라미터 (Stage 0 SPEC 동결):
     w_pe=60, m=3, tau=1, w_z=252, resid_win=504, tanh_scale=2.0
+    z_r_mode: "daily" (v3.1) or "3day_rms" (v3.2 후보)
 
 해석:
-    EPD_100 < 30   : 낮은 긴장 (Low tension)
+    EPD_100 < 30      : 낮은 긴장 (Low tension)
     30 ≤ EPD_100 < 70 : 중간 (Mid)
-    EPD_100 ≥ 70   : 높은 긴장 (High tension)
+    EPD_100 ≥ 70      : 높은 긴장 (High tension)
 
 주의:
     EPD는 방향 예측 지표가 아님.
     "가격 스트레스와 엔트로피 이탈의 magnitude divergence"를
     측정하는 시장 상태 변수.
 """
-
 from __future__ import annotations
 import numpy as np
 from ._core import rolling_pe, rolling_zscore
@@ -32,12 +33,16 @@ DEFAULT_TAU = 1
 DEFAULT_W_Z = 252
 DEFAULT_RESID_WIN = 504
 DEFAULT_TANH_SCALE = 2.0
+DEFAULT_Z_R_MODE = "daily"   # v3.1 baseline. "3day_rms" = v3.2 후보
 
 THRESHOLD_HIGH = 70
 THRESHOLD_LOW = 30
 EPS = 1e-9
 
 
+# ============================================================
+#  내부 유틸
+# ============================================================
 def _entropy_residual(pe, z_r, resid_win=DEFAULT_RESID_WIN):
     """E[PE | |Z_r|] 제거한 잔차."""
     n = len(pe)
@@ -64,6 +69,32 @@ def _entropy_residual(pe, z_r, resid_win=DEFAULT_RESID_WIN):
     return resid
 
 
+def _rolling_rms(r, window=3):
+    """최근 window개 수익률의 RMS. 부호 무시, 크기만."""
+    r = np.asarray(r, dtype=float)
+    n = len(r)
+    out = np.full(n, np.nan)
+    for t in range(window - 1, n):
+        w = r[t - window + 1 : t + 1]
+        if np.isfinite(w).all():
+            out[t] = float(np.sqrt(np.mean(w ** 2)))
+    return out
+
+
+def _compute_z_r(r, w_z, z_r_mode):
+    """z_r_mode에 따라 Z_r 계산."""
+    if z_r_mode == "daily":
+        return rolling_zscore(r, w_z=w_z)
+    if z_r_mode == "3day_rms":
+        rms3 = _rolling_rms(r, window=3)
+        return rolling_zscore(rms3, w_z=w_z)
+    raise ValueError(f"Unknown z_r_mode={z_r_mode!r}. "
+                     f"Use 'daily' or '3day_rms'.")
+
+
+# ============================================================
+#  메인 API
+# ============================================================
 def compute_epd(
     close,
     w_pe=DEFAULT_W_PE,
@@ -72,20 +103,48 @@ def compute_epd(
     w_z=DEFAULT_W_Z,
     resid_win=DEFAULT_RESID_WIN,
     tanh_scale=DEFAULT_TANH_SCALE,
+    z_r_mode=DEFAULT_Z_R_MODE,
 ):
-    """EPD v3.1 — magnitude divergence indicator."""
+    """EPD v3.2 — magnitude divergence indicator.
+
+    Parameters
+    ----------
+    close : 1D array, 양수
+    z_r_mode : {"daily", "3day_rms"}
+        - "daily"     : v3.1 baseline (오늘 하루 수익률)
+        - "3day_rms"  : v3.2 후보 (최근 3일 RMS)
+
+    Returns
+    -------
+    dict:
+        epd_100     : 0-100 (주 사용)
+        epd_mag     : ||Z_r| - |Z_e||
+        epd_dir     : sign 진단용
+        epd_raw     : Z_r - Z_e (legacy)
+        z_r, z_e    : z-scores
+        price_z     : |Z_r|
+        entropy_z   : |Z_e|
+        pe, resid   : 원천 시계열
+        params      : dict
+    """
     close = np.asarray(close, dtype=float)
     n = close.size
     if n < max(w_pe, w_z, resid_win) + 10:
         raise ValueError("close too short")
+    if np.any(close <= 0):
+        raise ValueError("close must be strictly positive")
 
     log_P = np.log(close)
     r = np.full(n, np.nan)
     r[1:] = np.diff(log_P)
 
+    # 순열 엔트로피
     pe = rolling_pe(r, w_pe=w_pe, m=m, tau=tau)
-    z_r = rolling_zscore(r, w_z=w_z)
 
+    # Z_r (모드별)
+    z_r = _compute_z_r(r, w_z=w_z, z_r_mode=z_r_mode)
+
+    # 잔차 → Z_e
     resid = _entropy_residual(pe, z_r, resid_win=resid_win)
     z_e = rolling_zscore(resid, w_z=w_z)
 
@@ -95,26 +154,27 @@ def compute_epd(
 
     # 진단용
     epd_dir = np.sign(np.abs(z_r) - np.abs(z_e))
-    epd_raw = z_r - z_e  # 기존 (참고)
+    epd_raw = z_r - z_e  # legacy
 
     return {
-        "epd_100": epd_100,  # 주 사용
-        "epd_mag": epd_mag,  # raw magnitude
-        "epd_dir": epd_dir,  # diagnostic
-        "epd_raw": epd_raw,  # legacy
-        "z_r": z_r,
-        "z_e": z_e,
-        "price_z": np.abs(z_r),
+        "epd_100":   epd_100,
+        "epd_mag":   epd_mag,
+        "epd_dir":   epd_dir,
+        "epd_raw":   epd_raw,
+        "z_r":       z_r,
+        "z_e":       z_e,
+        "price_z":   np.abs(z_r),
         "entropy_z": np.abs(z_e),
-        "pe": pe,
-        "resid": resid,
+        "pe":        pe,
+        "resid":     resid,
         "params": {
-            "w_pe": w_pe,
-            "m": m,
-            "tau": tau,
-            "w_z": w_z,
-            "resid_win": resid_win,
-            "tanh_scale": tanh_scale,
-            "version": "3.1.0",
+            "w_pe":        w_pe,
+            "m":           m,
+            "tau":         tau,
+            "w_z":         w_z,
+            "resid_win":   resid_win,
+            "tanh_scale":  tanh_scale,
+            "z_r_mode":    z_r_mode,
+            "version":     "3.1.0",
         },
     }
